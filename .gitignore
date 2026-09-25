@@ -1,0 +1,10 @@
+# Local environment
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Personal data: the SQLite database is created on first run
+*.db
