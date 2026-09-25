@@ -1,110 +1,46 @@
-import sqlite3
+import os
 from datetime import date
+
 import streamlit as st
-import pandas as pd
 
-DB_NAME = "applications.db"
+from tracker import db
+from tracker.export import to_csv_bytes
 
-def connect():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
-
-def init_db():
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS applications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company TEXT NOT NULL,
-            role TEXT NOT NULL,
-            link TEXT,
-            status TEXT NOT NULL,
-            applied_date TEXT NOT NULL,
-            follow_up_date TEXT,
-            notes TEXT
-        )
-    """)
-        # Simple migration: add follow_up_date if missing
-    try:
-        cur.execute("ALTER TABLE applications ADD COLUMN follow_up_date TEXT")
-    except sqlite3.OperationalError:
-        pass  # column already exists
-
-    conn.commit()
-    conn.close()
-
-def add_application(company, role, link, status, applied_date, follow_up_date, notes):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO applications (company, role, link, status, applied_date, follow_up_date, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (company, role, link, status, applied_date, follow_up_date, notes))
-    conn.commit()
-    conn.close()
-
-def get_applications(status_filter=None):
-    conn = connect()
-    cur = conn.cursor()
-    if status_filter and status_filter != "All":
-        cur.execute("SELECT * FROM applications WHERE status = ? ORDER BY id DESC", (status_filter,))
-    else:
-        cur.execute("SELECT * FROM applications ORDER BY id DESC")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def update_status(app_id, new_status):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE applications SET status = ? WHERE id = ?", (new_status, app_id))
-    conn.commit()
-    conn.close()
-
-def delete_application(app_id):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM applications WHERE id = ?", (app_id,))
-    conn.commit()
-    conn.close()
-
-def rows_to_df(rows):
-    return pd.DataFrame(
-        rows,
-        columns=["id", "company", "role", "link", "status", "applied_date", "notes"]
-    )
+DB_PATH = os.environ.get("TRACKER_DB", "applications.db")
 
 # ---- UI ----
 st.set_page_config(page_title="Job Application Tracker", layout="wide")
-init_db()
+db.init_db(DB_PATH)
 
 st.title("📌 Job Application Tracker")
 
-statuses = ["Applied", "Interviewing", "Offer", "Rejected"]
+statuses = db.STATUSES
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("Add an application")
     company = st.text_input("Company *")
-    follow_up_date = st.date_input("Follow-up date (optional)", value=None)
     role = st.text_input("Role *")
     link = st.text_input("Job link (optional)")
     status = st.selectbox("Status", statuses, index=0)
     applied_date = st.date_input("Applied date", value=date.today())
+    follow_up_date = st.date_input("Follow-up date (optional)", value=None)
     notes = st.text_area("Notes (optional)")
 
     if st.button("Add"):
         if not company.strip() or not role.strip():
             st.error("Company and Role are required.")
         else:
-            add_application(
-    company.strip(),
-    role.strip(),
-    link.strip(),
-    status,
-    str(applied_date),
-    str(follow_up_date) if follow_up_date else None,
-    notes.strip()
-)
+            db.add_application(
+                DB_PATH,
+                company.strip(),
+                role.strip(),
+                link.strip(),
+                status,
+                str(applied_date),
+                str(follow_up_date) if follow_up_date else None,
+                notes.strip(),
+            )
             st.success("Application added!")
             st.rerun()
 
@@ -112,33 +48,26 @@ with col2:
     st.subheader("Filter & stats")
     status_filter = st.selectbox("Show", ["All"] + statuses)
 
-    total = len(get_applications(None))
-    applied_count = len(get_applications("Applied"))
-    interviewing_count = len(get_applications("Interviewing"))
-    offer_count = len(get_applications("Offer"))
-    rejected_count = len(get_applications("Rejected"))
-
+    counts = db.count_by_status(DB_PATH)
     st.write("**Totals:**")
-    st.write(f"- Total: {total}")
-    st.write(f"- Applied: {applied_count}")
-    st.write(f"- Interviewing: {interviewing_count}")
-    st.write(f"- Offers: {offer_count}")
-    st.write(f"- Rejected: {rejected_count}")
+    st.write(f"- Total: {counts['Total']}")
+    st.write(f"- Applied: {counts['Applied']}")
+    st.write(f"- Interviewing: {counts['Interviewing']}")
+    st.write(f"- Offers: {counts['Offer']}")
+    st.write(f"- Rejected: {counts['Rejected']}")
 
 st.divider()
 st.subheader("Your applications")
-# Export all applications (ignores filters) to CSV
-all_rows = get_applications(None)
-df_all = rows_to_df(all_rows)
 
+# Export all applications (ignores filters) to CSV
 st.download_button(
     label="⬇️ Export to CSV",
-    data=df_all.to_csv(index=False).encode("utf-8"),
+    data=to_csv_bytes(db.get_applications(DB_PATH)),
     file_name="job_applications.csv",
-    mime="text/csv"
+    mime="text/csv",
 )
 
-apps = get_applications(status_filter)
+apps = db.get_applications(DB_PATH, status_filter)
 
 if not apps:
     st.info("No applications yet. Add one above.")
@@ -157,15 +86,15 @@ else:
                     f"Update status (ID {app_id})",
                     statuses,
                     index=statuses.index(status),
-                    key=f"status_{app_id}"
+                    key=f"status_{app_id}",
                 )
                 if st.button("Save status", key=f"save_{app_id}"):
-                    update_status(app_id, new_status)
+                    db.update_status(DB_PATH, app_id, new_status)
                     st.success("Status updated.")
                     st.rerun()
 
             with c2:
                 if st.button("Delete", key=f"del_{app_id}"):
-                    delete_application(app_id)
+                    db.delete_application(DB_PATH, app_id)
                     st.warning("Deleted.")
                     st.rerun()
