@@ -1,15 +1,19 @@
 """End-to-end checks of the Streamlit page using Streamlit's headless AppTest."""
 
+from pathlib import Path
+
 import pytest
 from streamlit.testing.v1 import AppTest
 
 from tracker import db
 
+APP_PATH = Path(__file__).resolve().parent.parent / "app.py"
+
 
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     monkeypatch.setenv("TRACKER_DB", str(tmp_path / "ui.db"))
-    at = AppTest.from_file("app.py", default_timeout=30)
+    at = AppTest.from_file(str(APP_PATH), default_timeout=30)
     at.run()
     assert not at.exception
     return at, tmp_path / "ui.db"
